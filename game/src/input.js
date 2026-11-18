@@ -1,53 +1,118 @@
-// Keyboard and pointer input. Held keys give a steering direction; one-shot presses (start or
-// restart, pause) are queued as bit flags and taken once by the loop, so a press between two
-// frames is never lost and never counted twice.
+/**
+ * input.js — Input handling for Vice Point 3D
+ *
+ * Exports:
+ *   createInput(canvas) -> input controller object with read(), mouse, attach(), detach().
+ */
 
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
+export function createInput(canvas) {
+  const keys = new Set();
+  const pressedEdges = new Set();
 
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
+  let mouseX = 0;
+  let mouseY = 0;
+  let mouseClicked = false;
+  let mouseClickedConsumed = false;
 
-export function createInput(target) {
-  let left = false;
-  let right = false;
-  let actions = 0;
+  const keyMap = {
+    'KeyW': 'up', 'ArrowUp': 'up',
+    'KeyS': 'down', 'ArrowDown': 'down',
+    'KeyA': 'left', 'ArrowLeft': 'left',
+    'KeyD': 'right', 'ArrowRight': 'right',
+    'KeyE': 'enter',
+    'KeyF': 'action',
+    'KeyR': 'radio',
+    'KeyP': 'pause', 'Escape': 'pause',
+    'KeyM': 'mute',
+    'Space': 'handbrake'
+  };
 
-  window.addEventListener('keydown', (event) => {
-    if (LEFT.has(event.code)) left = true;
-    else if (RIGHT.has(event.code)) right = true;
-    else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_CONFIRM;
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else return;
-    event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => {
-    if (LEFT.has(event.code)) left = false;
-    else if (RIGHT.has(event.code)) right = false;
-  });
-  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
-  window.addEventListener('blur', () => {
-    left = false;
-    right = false;
-  });
-  target.addEventListener('pointerdown', () => {
-    actions |= ACTION_CONFIRM;
-  });
+  function onKeyDown(e) {
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
+      e.preventDefault();
+    }
+    const action = keyMap[e.code];
+    if (action) {
+      if (!keys.has(action)) {
+        pressedEdges.add(action);
+      }
+      keys.add(action);
+    }
+  }
+
+  function onKeyUp(e) {
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
+      e.preventDefault();
+    }
+    const action = keyMap[e.code];
+    if (action) {
+      keys.delete(action);
+    }
+  }
+
+  function onMouseMove(e) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = 1280 / (rect.width || 1280);
+    const scaleY = 720 / (rect.height || 720);
+    mouseX = (e.clientX - rect.left) * scaleX;
+    mouseY = (e.clientY - rect.top) * scaleY;
+  }
+
+  function onMouseDown(e) {
+    if (e.button === 0) {
+      mouseClicked = true;
+      mouseClickedConsumed = false;
+    }
+  }
+
+  function attach() {
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    canvas.addEventListener('mousemove', onMouseMove);
+    canvas.addEventListener('mousedown', onMouseDown);
+  }
+
+  function detach() {
+    window.removeEventListener('keydown', onKeyDown);
+    window.removeEventListener('keyup', onKeyUp);
+    canvas.removeEventListener('mousemove', onMouseMove);
+    canvas.removeEventListener('mousedown', onMouseDown);
+    keys.clear();
+    pressedEdges.clear();
+  }
 
   return {
-    /** -1 for left, 1 for right, 0 for neither or both. */
-    direction() {
-      return (right ? 1 : 0) - (left ? 1 : 0);
+    read() {
+      let mx = 0;
+      let my = 0;
+      if (keys.has('left')) mx -= 1;
+      if (keys.has('right')) mx += 1;
+      if (keys.has('up')) my -= 1;
+      if (keys.has('down')) my += 1;
+
+      const enter = pressedEdges.has('enter');
+      const action = pressedEdges.has('action');
+      const radio = pressedEdges.has('radio');
+      const pause = pressedEdges.has('pause');
+      const mute = pressedEdges.has('mute');
+      const handbrake = keys.has('handbrake');
+
+      pressedEdges.clear();
+
+      return { mx, my, enter, action, handbrake, radio, pause, mute };
     },
-    /** The one-shot presses since the last call, as ACTION_* flags. */
-    takeActions() {
-      const taken = actions;
-      actions = 0;
-      return taken;
+    mouse: {
+      get x() { return mouseX; },
+      get y() { return mouseY; },
+      get clicked() {
+        if (mouseClicked && !mouseClickedConsumed) {
+          mouseClickedConsumed = true;
+          return true;
+        }
+        return false;
+      }
     },
+    attach,
+    detach
   };
 }

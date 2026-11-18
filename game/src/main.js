@@ -1,134 +1,187 @@
-// Boot and the one loop: input is read every frame, the world advances in fixed 1/60 s steps
-// (several in a slow frame, none in a fast one), and the renderer paints what is there. The game
-// moves between four screens: title, play, paused and game over.
-//
-// ?seed=N fixes the falling pattern. ?shot=start|play|end (with &seed=N) stages that scene
-// instead of running the loop, paints it twice and sets window.__shotReady for a screenshot.
-import { BEST_KEY, LIVES, STEP } from './config.js';
+/**
+ * main.js — Main game loop and controller for Vice Point 3D
+ *
+ * Implements the initialization, URL query parsing (?seed=, ?shot=),
+ * game screens (title, play, paused, over, win), fixed timestep updates,
+ * event handling, and localStorage persistence.
+ */
+
+import { createWorld, EVENT_OVER, EVENT_BUSTED, EVENT_MISSION } from './world.js';
 import { createRandom } from './random.js';
-import { createWorld, EVENT_HIT, EVENT_OVER } from './world.js';
-import { ACTION_CONFIRM, ACTION_PAUSE, createInput } from './input.js';
-import { createRenderer, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+import { createRenderer, SCREEN_TITLE, SCREEN_PLAY, SCREEN_PAUSED, SCREEN_OVER, SCREEN_WIN } from './render.js';
 import { stageShot } from './shots.js';
+import { createInput } from './input.js';
+import { STEP, SAVE_KEY, BEST_KEY, CAR } from './config.js';
+import { createAudio } from './audio.js';
 
-/** The longest frame the loop catches up on; a longer stall (a hidden tab) is dropped, not replayed. */
-const MAX_FRAME = 0.25;
+window.addEventListener('DOMContentLoaded', () => {
+  const canvas = document.getElementById('game');
+  if (!canvas) return;
 
-const params = new URLSearchParams(window.location.search);
-const shot = params.get('shot');
-const seedParam = Number.parseInt(params.get('seed') ?? '', 10);
-const seed = Number.isInteger(seedParam) ? seedParam : Math.floor(Math.random() * 4294967296);
+  // URL parameters
+  const urlParams = new URLSearchParams(window.location.search);
+  const seedParam = urlParams.get('seed');
+  const seed = seedParam !== null ? parseInt(seedParam, 10) : Math.floor(Math.random() * 1000000);
+  const shotParam = urlParams.get('shot');
 
-const canvas = document.getElementById('game');
-const status = document.getElementById('status');
-const world = createWorld(createRandom(seed));
-const renderer = createRenderer(canvas);
-
-function readBest() {
-  try {
-    return Number.parseInt(window.localStorage.getItem(BEST_KEY) ?? '0', 10) || 0;
-  } catch {
-    return 0;
-  }
-}
-
-function saveBest(value) {
-  try {
-    window.localStorage.setItem(BEST_KEY, String(value));
-  } catch {
-    // Storage can be off (private windows): the best score then lasts this visit only.
-  }
-}
-
-function runShot(name) {
-  const scene = stageShot(name, world);
-  let painted = 0;
-  function paint() {
-    renderer.draw(world.state, scene.screen, scene.best);
-    painted += 1;
-    if (painted < 2) requestAnimationFrame(paint);
-    else window.__shotReady = true;
-  }
-  requestAnimationFrame(paint);
-}
-
-function runGame() {
+  const rng = createRandom(seed);
+  const world = createWorld(rng);
+  const renderer = createRenderer(canvas);
   const input = createInput(canvas);
+  input.attach();
+
+  const audio = createAudio();
+  world.state.radio = audio.currentStation();
+
   let screen = SCREEN_TITLE;
-  let best = readBest();
-  let accumulator = 0;
-  let last = performance.now();
-
-  // Screen readers (and anyone watching the page's text) hear the screen changes and each hit.
-  function announce(message) {
-    status.textContent = message;
+  let bestMoney = 0;
+  try {
+    const savedBest = localStorage.getItem(BEST_KEY);
+    if (savedBest) bestMoney = parseInt(savedBest, 10) || 0;
+  } catch (e) {
+    // ignore storage errors
   }
 
-  function startGame() {
-    world.reset();
-    accumulator = 0;
-    screen = SCREEN_PLAY;
-    announce(`Playing. ${LIVES} lives.`);
-  }
-
-  function endGame() {
-    screen = SCREEN_OVER;
-    if (world.state.score > best) {
-      best = world.state.score;
-      saveBest(best);
+  // Handle ?shot= mode if present
+  if (shotParam) {
+    try {
+      const shot = stageShot(shotParam, world);
+      const shotScreen = (shot && shot.screen) || SCREEN_PLAY;
+      const shotBest = (shot && typeof shot.best === 'number') ? shot.best : bestMoney;
+      renderer.draw(world.state, shotScreen, shotBest);
+      renderer.draw(world.state, shotScreen, shotBest);
+      window.__shotReady = true;
+    } catch (e) {
+      console.error('Error staging shot:', e);
     }
-    announce(`Game over. Score ${world.state.score}. Best ${best}.`);
+    return;
   }
 
-  function handleActions() {
-    const actions = input.takeActions();
-    if (actions & ACTION_CONFIRM && (screen === SCREEN_TITLE || screen === SCREEN_OVER)) startGame();
-    else if (actions & ACTION_PAUSE && screen === SCREEN_PLAY) {
-      screen = SCREEN_PAUSED;
-      announce('Paused.');
-    } else if (actions & (ACTION_PAUSE | ACTION_CONFIRM) && screen === SCREEN_PAUSED) {
-      screen = SCREEN_PLAY;
-      announce('Playing.');
-    }
-  }
-
-  function step() {
-    if (screen === SCREEN_TITLE) {
-      world.step(STEP, 0, true);
-      return;
-    }
-    const events = world.step(STEP, input.direction(), false);
-    if (events & EVENT_OVER) endGame();
-    else if (events & EVENT_HIT) announce(world.state.lives === 1 ? 'Hit. 1 life left.' : `Hit. ${world.state.lives} lives left.`);
-  }
-
-  function frame(now) {
-    requestAnimationFrame(frame);
-    accumulator += Math.min((now - last) / 1000, MAX_FRAME);
-    last = now;
-    handleActions();
-    if (screen === SCREEN_TITLE || screen === SCREEN_PLAY) {
-      while (accumulator >= STEP && (screen === SCREEN_TITLE || screen === SCREEN_PLAY)) {
-        step();
-        accumulator -= STEP;
-      }
-    } else {
-      accumulator = 0;
-    }
-    renderer.draw(world.state, screen, best);
-  }
-
-  // Leaving the tab pauses a running game rather than letting blocks fall unseen.
+  // Handle visibility pause
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && screen === SCREEN_PLAY) {
       screen = SCREEN_PAUSED;
-      announce('Paused.');
+      audio.setPaused(true);
     }
   });
 
-  announce('Block Dodger. Press Space or click to start.');
-  requestAnimationFrame(frame);
-}
+  let lastTime = performance.now();
+  let accumulator = 0;
+  let lastPlayerSpeed = 0;
 
-if (shot) runShot(shot);
-else runGame();
+  function loop(currentTime) {
+    requestAnimationFrame(loop);
+
+    const frameTime = (currentTime - lastTime) / 1000;
+    lastTime = currentTime;
+    accumulator += Math.min(frameTime, 0.25);
+
+    const inputs = input.read();
+
+    if (inputs.radio) {
+      audio.setStation((audio.currentStation().index + 1) % 3);
+      world.state.radio = audio.currentStation();
+    }
+
+    if (inputs.mute) {
+      audio.setMuted(!audio.isMuted());
+    }
+
+    // Pause toggling
+    if (inputs.pause) {
+      if (screen === SCREEN_PLAY) {
+        screen = SCREEN_PAUSED;
+        audio.setPaused(true);
+      } else if (screen === SCREEN_PAUSED) {
+        screen = SCREEN_PLAY;
+        audio.setPaused(false);
+      }
+    }
+
+    if (screen === SCREEN_TITLE) {
+      // Attract mode: step world with attract = true, no player input
+      while (accumulator >= STEP) {
+        world.step(STEP, { mx: 0, my: 0, enter: false, action: false, handbrake: false }, true);
+        accumulator -= STEP;
+      }
+      renderer.draw(world.state, SCREEN_TITLE, bestMoney);
+
+      if (inputs.enter || inputs.action || inputs.handbrake || input.mouse.clicked) {
+        audio.resume();
+        world.reset();
+        screen = SCREEN_PLAY;
+        audio.setPaused(false);
+      }
+    } else if (screen === SCREEN_PLAY) {
+      audio.tick(frameTime);
+
+      const pSpeed = world.state.player.onFoot ? 0 : world.state.player.speed;
+      audio.setSpeed(pSpeed, CAR.maxSpeed);
+      audio.setWanted(world.state.wanted);
+
+      // Check hard crash (sudden speed drop in car)
+      if (!world.state.player.onFoot && lastPlayerSpeed - pSpeed > 250 && Math.abs(pSpeed) < 50) {
+        if (typeof audio.crash === 'function') audio.crash();
+      }
+      lastPlayerSpeed = pSpeed;
+
+      while (accumulator >= STEP) {
+        const events = world.step(STEP, inputs, false);
+
+        if (events & EVENT_BUSTED) {
+          world.state.busted = true;
+          screen = SCREEN_OVER;
+          updateBest(world.state.money);
+        } else if (events & EVENT_OVER) {
+          world.state.busted = false;
+          screen = SCREEN_OVER;
+          updateBest(world.state.money);
+        } else if (events & EVENT_MISSION) {
+          // Mission progress / completion
+          if (typeof audio.complete === 'function') audio.complete();
+          try {
+            localStorage.setItem(SAVE_KEY, String(world.state.money || 0));
+          } catch (e) {}
+        }
+
+        if (world.state.win) {
+          screen = SCREEN_WIN;
+          updateBest(world.state.money);
+        }
+
+        accumulator -= STEP;
+      }
+      renderer.draw(world.state, SCREEN_PLAY, bestMoney);
+    } else if (screen === SCREEN_PAUSED) {
+      accumulator = 0; // discard delta during pause
+      renderer.draw(world.state, SCREEN_PAUSED, bestMoney);
+      if (inputs.enter || inputs.handbrake) {
+        screen = SCREEN_PLAY;
+        audio.setPaused(false);
+      }
+    } else if (screen === SCREEN_OVER || screen === SCREEN_WIN) {
+      accumulator = 0;
+      renderer.draw(world.state, screen, bestMoney);
+      if (inputs.enter || inputs.action || inputs.handbrake || input.mouse.clicked) {
+        audio.resume();
+        world.reset();
+        screen = SCREEN_PLAY;
+        audio.setPaused(false);
+      }
+    }
+  }
+
+  function updateBest(money) {
+    if (money > bestMoney) {
+      bestMoney = money;
+      try {
+        localStorage.setItem(BEST_KEY, String(bestMoney));
+      } catch (e) {}
+    }
+  }
+
+  requestAnimationFrame((time) => {
+    lastTime = time;
+    requestAnimationFrame(loop);
+  });
+});
