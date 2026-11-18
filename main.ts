@@ -8,6 +8,9 @@
 // your own open-world crime game in its place (three.js or any library you vendor under game/),
 // put your 3 or 4 PNG or JPEG screenshots in screenshots/ (the first by name is the cover) and run it.
 //
+// Vice Point 3D: a 3D open-world crime game in WebGL2 featuring a neon-dusk coastal city,
+// 3D chase camera, vehicle theft, police chases with helicopter, 7 story missions, and 3 radio stations.
+//
 // Serve it locally with `node serve.ts`, then open http://localhost:8080.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
